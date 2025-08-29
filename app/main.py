@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response 
 from fastapi.responses import HTMLResponse
 from .db import Base, engine
 from .routers import jobs, candidates, match
@@ -222,6 +222,7 @@ async function runMatch() {
   runId = j.id; setText("run_status", "Run created ✓", true, false); setDbg();
 }
 
+/* ---- UPDATED: humanized results with name + subscores + rank ---- */
 async function getResults() {
   if (!runId) { setText("run_status", "Run the match first", false, true); return; }
   setText("run_status", "Fetching results…");
@@ -229,10 +230,34 @@ async function getResults() {
   if (!r.ok) { setText("run_status", "Error fetching results", false, true); return; }
   const j = await r.json();
   setText("run_status", "Top-5 loaded ✓", true, false);
+
   const rows = (j.results || []).map(row => {
-    const sugg = JSON.stringify(row.suggestions || {}, null, 2);
-    return `<tr><td><code>${row.candidate_id}</code></td><td>${(row.total_score*100).toFixed(1)}%</td><td>${row.rank}</td><td><pre>${sugg}</pre></td></tr>`;
+    const name = row.candidate_label || row.candidate_id; // uses label if backend provides it
+    const scorePct = (row.total_score * 100).toFixed(1) + "%";
+    const rank = (row.rank != null) ? row.rank : "-";
+
+    const subs = row.subscores || {};
+    const req = subs.req_skills != null ? (subs.req_skills * 100).toFixed(0) + "%" : "-";
+    const pref = subs.pref_skills != null ? (subs.pref_skills * 100).toFixed(0) + "%" : "-";
+
+    const sugg = row.suggestions || {};
+    const skills = (sugg.skills_to_surface || []).map(s => `<code>${s}</code>`).join(", ");
+    const rewrites = (sugg.bullets_to_rewrite || []).map(o => {
+      const esc = s => (s || "").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      return `<div style="margin:.25rem 0"><div class="muted">• ${esc(o.original)}</div><div>↳ ${esc(o.rewrite)}</div></div>`;
+    }).join("");
+
+    return `<tr>
+      <td>${name}<div class="muted"><code>${row.candidate_id}</code></div></td>
+      <td>${scorePct}<div class="muted">req ${req} • pref ${pref}</div></td>
+      <td>${rank}</td>
+      <td>
+        <div><span class="muted">Skills to surface:</span> ${skills || "<span class='muted'>(none)</span>"}</div>
+        <div style="margin-top:.25rem"><span class="muted">Rewrites:</span> ${rewrites || "<span class='muted'>(none)</span>"}</div>
+      </td>
+    </tr>`;
   }).join("");
+
   document.getElementById("results").innerHTML =
     `<table><thead><tr><th>Candidate</th><th>Score</th><th>Rank</th><th>Suggestions</th></tr></thead><tbody>` +
     (rows || "<tr><td colspan='4'>No results.</td></tr>") + "</tbody></table>";

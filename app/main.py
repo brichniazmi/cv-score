@@ -221,3 +221,27 @@ async function runMatch() {
   const j = await r.json();
   runId = j.id; setText("run_status", "Run created ✓", true, false); setDbg();
 }
+
+async function getResults() {
+  if (!runId) { setText("run_status", "Run the match first", false, true); return; }
+  setText("run_status", "Fetching results…");
+  const r = await fetch(`/match/${runId}/results?top_n=5`);
+  if (!r.ok) { setText("run_status", "Error fetching results", false, true); return; }
+  const j = await r.json();
+  setText("run_status", "Top-5 loaded ✓", true, false);
+  const rows = (j.results || []).map(row => {
+    const sugg = JSON.stringify(row.suggestions || {}, null, 2);
+    return `<tr><td><code>${row.candidate_id}</code></td><td>${(row.total_score*100).toFixed(1)}%</td><td>${row.rank}</td><td><pre>${sugg}</pre></td></tr>`;
+  }).join("");
+  document.getElementById("results").innerHTML =
+    `<table><thead><tr><th>Candidate</th><th>Score</th><th>Rank</th><th>Suggestions</th></tr></thead><tbody>` +
+    (rows || "<tr><td colspan='4'>No results.</td></tr>") + "</tbody></table>";
+}
+</script>
+</body>
+</html>
+"""
+
+@app.get("/ui", response_class=HTMLResponse)
+def ui_page():
+    return UI_HTML

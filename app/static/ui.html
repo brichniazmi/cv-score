@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CV Score — Dashboard</title>
+  <title>CV Score — Dashboard (Uploads)</title>
   <style>
     :root { --bg:#0b1020; --card:#111734; --muted:#a3acc3; --text:#e7ecff; --accent:#7c9cff; --ok:#10b981; --err:#ef4444; }
     *{box-sizing:border-box} html,body{height:100%}
@@ -18,14 +18,13 @@
     h2{margin:0 0 10px 0;font-size:18px}
     label{display:block;margin:10px 0 6px 2px; color:#c9d4ff; font-size:14px}
     input[type=text], textarea{width:100%;background:#0a0f24;border:1px solid #223058;border-radius:12px;color:var(--text);padding:10px 12px;outline:none}
-    textarea{min-height:120px;resize:vertical;line-height:1.45}
+    textarea{min-height:100px;resize:vertical;line-height:1.45}
     .row{display:grid; grid-template-columns:1fr 1fr; gap:10px}
     .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
     button{appearance:none;background:linear-gradient(180deg,#1a2a6b,#16255a);border:1px solid #2c3f83;color:var(--text);border-radius:12px;padding:10px 14px;cursor:pointer;transition:transform .05s ease, box-shadow .2s ease}
     button:hover{transform:translateY(-1px); box-shadow:0 8px 24px #5f77ff33}
     button.secondary{background:linear-gradient(180deg,#19223f,#121a36);border-color:#2a355f}
     .status{font-size:12px;color:var(--muted);margin-left:8px;align-self:center}
-    .pill{display:inline-block;background:#18224a;color:#9fb3ff;padding:4px 10px;border-radius:999px;font-size:12px;margin-left:8px;border:1px solid #2a3a78}
     .muted{color:var(--muted)} .small{font-size:12px}
     .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
     .chip{padding:3px 8px;border-radius:999px;background:#17224a;border:1px solid #2a3a78;color:#cfe0ff;font-size:12px}
@@ -35,11 +34,6 @@
     .bar{height:10px;background:#1b2447;border-radius:999px;overflow:hidden}
     .bar>i{display:block;height:100%;background:linear-gradient(90deg,#7c9cff,#22d3ee);}
     .badge{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;background:#17224a;border:1px solid #2a3a78;color:#cfe0ff;font-size:12px}
-    .ok{color:#34d399} .err{color:#f87171}
-    .rowlist{display:flex;flex-direction:column;gap:6px}
-    .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    .toast{position:fixed;right:16px;bottom:16px;background:#0b132b;border:1px solid #223058;padding:12px 14px;border-radius:12px;box-shadow:0 8px 24px #00000066;display:none}
-    code{background:#0a0f24;border:1px solid #223058;padding:2px 6px;border-radius:6px}
   </style>
 </head>
 <body>
@@ -47,30 +41,14 @@
     <div class="brand">
       <div class="logo"></div>
       <div>
-        <div>CV Score <span class="pill">Dashboard</span></div>
-        <div class="subtitle">JDs & CVs → Top-5 with suggestions</div>
+        <div>CV Score <span class="chip">Uploads</span></div>
+        <div class="subtitle">Create Job → Create Candidate → Paste or Upload CV → Match</div>
       </div>
     </div>
-    <div class="controls">
-      <label class="small">Live refresh</label>
-      <input id="liveChk" type="checkbox" />
-      <label class="small">Min score</label>
-      <input id="minScore" type="text" placeholder="e.g. 0.5" style="width:80px" />
-      <button class="secondary" id="btnCopyJson">Copy JSON</button>
-      <button class="secondary" id="btnCsv">Download CSV</button>
-    </div>
+    <div class="small muted">Service: <code id="dbg_url"></code></div>
   </header>
 
   <div class="container">
-    <section class="card" id="jobSummary" style="display:none">
-      <div class="small muted">Current job</div>
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
-        <div><strong id="sumTitle"></strong></div>
-        <div class="chips" id="sumReq"></div>
-        <div class="chips" id="sumPref"></div>
-      </div>
-    </section>
-
     <div class="grid">
       <section class="card">
         <h2>1) Job setup</h2>
@@ -89,7 +67,7 @@
         <label>Job description</label>
         <textarea id="job_text" placeholder="We need ETL, Airflow, Spark, Databricks, Delta Lake"></textarea>
         <div class="toolbar">
-          <button id="btnCreateJob">Create Job</button>
+          <button onclick="createJob()">Create Job</button>
           <span id="job_status" class="status"></span>
         </div>
         <div class="small muted" style="margin-top:6px">Job ID: <code id="dbg_job">—</code></div>
@@ -108,75 +86,53 @@
           </div>
         </div>
         <div class="toolbar">
-          <button id="btnCreateCand">Create Candidate</button>
+          <button onclick="createCandidate()">Create Candidate</button>
           <span id="cand_status" class="status"></span>
         </div>
-        <label>CV text</label>
-        <textarea id="cv_text" placeholder="- Built ETL in Airflow...\n- Migrated to Spark on Databricks; cut runtime 41%"></textarea>
+        <label>CV text (optional)</label>
+        <textarea id="cv_text" placeholder="- Built ETL in Airflow...
+- Migrated to Spark on Databricks; cut runtime 41%"></textarea>
         <div class="toolbar">
-          <button class="secondary" id="btnAttach">Attach CV</button>
+          <button class="secondary" onclick="addCV()">Attach CV text</button>
           <span id="cv_status" class="status"></span>
         </div>
 
-        <details style="margin-top:10px">
-          <summary class="small">Bulk add candidates (paste many CVs, separate with a line containing <code>---</code>)</summary>
-          <textarea id="bulk_cvs" placeholder="CV 1 text...\n---\nCV 2 text...\n---\nCV 3 text..."></textarea>
+        <div style="margin-top:12px;border-top:1px dashed #2a3a78;padding-top:12px">
+          <label>Upload PDF/DOCX</label>
+          <input id="cv_file" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
           <div class="toolbar">
-            <button class="secondary" id="btnBulk">Add all</button>
-            <span id="bulk_status" class="status"></span>
+            <button class="secondary" onclick="uploadFile()">Upload file</button>
+            <span id="file_status" class="status"></span>
           </div>
-        </details>
-
-        <div class="rowlist" id="cand_list"></div>
-        <div class="small muted" style="margin-top:6px">Candidate ID: <code id="dbg_cand">—</code></div>
+        </div>
       </section>
     </div>
 
     <section class="card">
       <h2>3) Match & Results</h2>
       <div class="toolbar">
-        <button id="btnRun">Run match for Job</button>
-        <button class="secondary" id="btnRefresh">Refresh Top-5</button>
+        <button onclick="runMatch()">Run match for Job</button>
+        <button class="secondary" onclick="getResults()">Refresh Top-5</button>
         <span id="run_status" class="status"></span>
       </div>
-
       <div id="results"></div>
       <div class="small muted" style="margin-top:6px">Run ID: <code id="dbg_run">—</code></div>
     </section>
   </div>
 
-  <div id="toast" class="toast"></div>
-
 <script>
-/* ====== state & helpers ====== */
 let jobId = localStorage.getItem("jobId") || null;
 let candidateId = localStorage.getItem("candidateId") || null;
 let runId = localStorage.getItem("runId") || null;
-let live = localStorage.getItem("live")==="true";
-let lastResults = [];
+document.getElementById("dbg_url").textContent = location.origin;
 
-const el = id => document.getElementById(id);
+const el = (id)=>document.getElementById(id);
 const setText = (id, txt, kind="") => { const n=el(id); if(n){ n.textContent = txt||""; n.className = "status " + kind; } }
-const dbg = () => { el("dbg_job").textContent = jobId || "—"; el("dbg_cand").textContent = candidateId || "—"; el("dbg_run").textContent = runId || "—"; }
-function toast(msg){ const box=el("toast"); box.textContent=msg; box.style.display="block"; setTimeout(()=>box.style.display="none",2000); }
+const dbg = () => { el("dbg_job").textContent = jobId || "—"; el("dbg_run").textContent = runId || "—"; }
 function arrFromComma(s){ return (s||"").split(",").map(v=>v.trim()).filter(Boolean); }
 function pct(n){ return Math.max(0, Math.min(100, Math.round((n||0)*1000)/10)); }
-function escapeHtml(s){ return (s||"").replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"\'":'&#39;','"':'&quot;'}[c])); }
+function escapeHtml(s){ return (s||"").replace(/[&<>'\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"\'":'&#39;','"':'&quot;'}[c])); }
 
-/* ====== live controls ====== */
-const liveChk = el("liveChk"); liveChk.checked = live;
-liveChk.addEventListener("change", ()=> { live = liveChk.checked; localStorage.setItem("live", live?"true":"false"); if(live && runId) poll(); });
-
-/* ====== job summary chips ====== */
-function renderJobSummary(title, req=[], pref=[]){
-  const box = el("jobSummary"); if(!title){ box.style.display="none"; return; }
-  el("sumTitle").textContent = title;
-  const reqBox = el("sumReq"); reqBox.innerHTML = req.map(s=>`<span class="chip">req: ${escapeHtml(s)}</span>`).join(" ");
-  const prefBox = el("sumPref"); prefBox.innerHTML = pref.map(s=>`<span class="chip muted">pref: ${escapeHtml(s)}</span>`).join(" ");
-  box.style.display = "block";
-}
-
-/* ====== actions ====== */
 async function createJob(){
   setText("job_status","Creating job…");
   const payload = {
@@ -186,81 +142,56 @@ async function createJob(){
     jd_preferred_skills: arrFromComma(el("job_pref").value || "databricks, delta lake")
   };
   const r = await fetch("/jobs/", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
-  if(!r.ok){ setText("job_status","Error creating job","err"); toast("Job creation failed"); return; }
+  if(!r.ok){ setText("job_status","Error creating job","err"); return; }
   const j = await r.json();
   jobId = j.id; localStorage.setItem("jobId", jobId);
-  renderJobSummary(payload.title, payload.jd_required_skills, payload.jd_preferred_skills);
-  setText("job_status","Job created ✓","ok"); dbg(); toast("Job created");
+  setText("job_status","Job created ✓","ok"); dbg();
 }
 
 async function createCandidate(){
   setText("cand_status","Creating candidate…");
   const payload = { external_ref: el("cand_ref").value || null, anonymized: el("cand_anon").checked || false };
   const r = await fetch("/candidates/", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
-  if(!r.ok){ setText("cand_status","Error creating candidate","err"); toast("Candidate creation failed"); return; }
+  if(!r.ok){ setText("cand_status","Error creating candidate","err"); return; }
   const j = await r.json();
   candidateId = j.id; localStorage.setItem("candidateId", candidateId);
-  setText("cand_status","Candidate created ✓","ok"); dbg(); toast("Candidate created");
-  renderCandList([{id: candidateId, ref: payload.external_ref || "(no ref)"}], true);
-}
-
-function renderCandList(list, replace=false){
-  const box = el("cand_list");
-  if(replace) box.innerHTML = "";
-  list.forEach(c => {
-    const div = document.createElement("div");
-    div.innerHTML = `<span class="badge">Candidate</span> <code>${c.id}</code> <span class="muted small">${c.ref||""}</span>`;
-    box.prepend(div);
-  });
-}
-
-async function attachCV(text){
-  if(!candidateId){ setText("cv_status","Create a candidate first","err"); toast("No candidate yet"); return false; }
-  const payload = { type:"cv", text_extracted: text, parsed_json: null };
-  const r = await fetch(`/candidates/${candidateId}/documents`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
-  return r.ok;
+  setText("cand_status","Candidate created ✓","ok");
 }
 
 async function addCV(){
-  setText("cv_status","Attaching CV…");
-  const ok = await attachCV(el("cv_text").value || "");
-  if(!ok){ setText("cv_status","Error attaching CV","err"); toast("CV attach failed"); return; }
-  setText("cv_status","CV attached ✓","ok"); toast("CV attached");
+  if(!candidateId){ setText("cv_status","Create a candidate first","err"); return; }
+  setText("cv_status","Attaching CV text…");
+  const payload = { type:"cv", text_extracted: el("cv_text").value || "", parsed_json: null };
+  const r = await fetch(`/candidates/${candidateId}/documents`, {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+  if(!r.ok){ setText("cv_status","Error attaching CV","err"); return; }
+  setText("cv_status","CV text attached ✓","ok");
 }
 
-async function bulkAdd(){
-  if(!jobId){ setText("bulk_status","Create the job first","err"); return; }
-  const raw = el("bulk_cvs").value || "";
-  const blocks = raw.split(/\n---+\n/).map(s=>s.trim()).filter(Boolean);
-  if(!blocks.length){ setText("bulk_status","Nothing to add","err"); return; }
-  setText("bulk_status",`Processing ${blocks.length} CV(s)…`);
-  for(const text of blocks){
-    // create candidate
-    const rC = await fetch("/candidates/", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({external_ref:null, anonymized:false})});
-    if(!rC.ok){ setText("bulk_status","Failed creating a candidate","err"); return; }
-    const c = await rC.json(); candidateId = c.id; localStorage.setItem("candidateId", candidateId);
-    // attach CV
-    const ok = await attachCV(text);
-    if(!ok){ setText("bulk_status","Failed attaching a CV","err"); return; }
-    renderCandList([{id:c.id, ref:"(bulk)"}]);
+async function uploadFile(){
+  if(!candidateId){ setText("file_status","Create a candidate first","err"); return; }
+  const file = el("cv_file").files[0];
+  if(!file){ setText("file_status","Choose a PDF or DOCX","err"); return; }
+  const form = new FormData();
+  form.append("file", file);
+  setText("file_status","Uploading…");
+  const r = await fetch(`/candidates/${candidateId}/upload`, { method:"POST", body: form });
+  if(!r.ok){
+    const msg = await r.text();
+    setText("file_status", "Upload failed: " + (msg || r.status), "err");
+    return;
   }
-  setText("bulk_status","Bulk added ✓","ok"); toast("Bulk add done");
+  setText("file_status","File uploaded ✓","ok");
 }
 
 async function runMatch(){
-  if(!jobId){ setText("run_status","Create a job first","err"); toast("No job yet"); return; }
+  if(!jobId){ setText("run_status","Create a job first","err"); return; }
   setText("run_status","Running match…");
   const r = await fetch(`/match/${jobId}/run`, {method:"POST"});
-  if(!r.ok){ setText("run_status","Error running match","err"); toast("Match failed"); return; }
+  if(!r.ok){ setText("run_status","Error running match","err"); return; }
   const j = await r.json();
   runId = j.id; localStorage.setItem("runId", runId);
-  setText("run_status","Run created ✓","ok"); dbg(); toast("Run created");
-  if(live) poll();
-}
-
-async function poll(){
+  setText("run_status","Run created ✓","ok"); dbg();
   await getResults();
-  if(live) setTimeout(poll, 2500);
 }
 
 async function getResults(){
@@ -268,18 +199,13 @@ async function getResults(){
   const r = await fetch(`/match/${runId}/results?top_n=5`);
   if(!r.ok){ setText("run_status","Error loading results","err"); return; }
   const j = await r.json();
-  lastResults = j.results || [];
-  renderResults();
+  renderResults(j.results || []);
   setText("run_status","Top-5 updated ✓","ok");
 }
 
-/* ====== results rendering + tools ====== */
-function renderResults(){
-  const box = el("results");
-  const min = parseFloat(el("minScore").value || "0") || 0;
-  const rows = lastResults.filter(r => (r.total_score||0) >= min);
-  if(!rows.length){ box.innerHTML = `<div class="muted">No results (try lowering “Min score”).</div>`; return; }
-
+function renderResults(rows){
+  const box = document.getElementById("results");
+  if(!rows.length){ box.innerHTML = `<div class="muted">No results yet.</div>`; return; }
   const trs = rows.map(r => {
     const score = pct(r.total_score);
     const subs = Object.entries(r.subscores||{}).map(([k,v]) => `<span class="chip">${k}: ${pct(v)}%</span>`).join(" ");
@@ -287,12 +213,11 @@ function renderResults(){
     const sugg = r.suggestions || {};
     const skills = (sugg.skills_to_surface||[]).map(s=>`<span class="chip">${escapeHtml(s)}</span>`).join(" ");
     const rewrites = (sugg.bullets_to_rewrite||[]).slice(0,2).map(o=>`<div class="small"><div class="muted">• ${escapeHtml(o.original||"")}</div><div>↳ ${escapeHtml(o.rewrite||"")}</div></div>`).join("");
-    const copyText = JSON.stringify(sugg, null, 2);
     return `<tr>
       <td style="width:30%">
         <div class="badge">Candidate</div>
         <div><code>${r.candidate_id}</code></div>
-        <div class="muted small">Rank #${r.rank}</div>
+        <div class="small muted">Rank #${r.rank}</div>
       </td>
       <td style="width:30%">
         <div class="bar"><i style="width:${score}%"></i></div>
@@ -305,9 +230,6 @@ function renderResults(){
         <div class="chips">${skills || "<span class='muted small'>(none)</span>"}</div>
         <div class="small muted" style="margin-top:8px">Rewrites</div>
         <div>${rewrites || "<span class='muted small'>(none)</span>"}</div>
-        <div class="toolbar" style="margin-top:8px">
-          <button class="secondary" onclick='navigator.clipboard.writeText(${JSON.stringify(copyText)})'>Copy suggestions</button>
-        </div>
       </td>
     </tr>`;
   }).join("");
@@ -318,46 +240,7 @@ function renderResults(){
   </table>`;
 }
 
-/* ====== CSV / JSON tools ====== */
-function download(filename, text){
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], {type: "text/plain"}));
-  a.download = filename; a.click(); URL.revokeObjectURL(a.href);
-}
-function toCSV(rows){
-  const header = ["candidate_id","total_score","rank","skills_to_surface"];
-  const lines = [header.join(",")];
-  for(const r of rows){
-    const skills = (r.suggestions?.skills_to_surface||[]).join("|");
-    lines.push([r.candidate_id, r.total_score, r.rank, `"${skills.replace(/"/g,'""')}"`].join(","));
-  }
-  return lines.join("\n");
-}
-
-/* ====== events ====== */
-el("btnCreateJob").onclick = createJob;
-el("btnCreateCand").onclick = createCandidate;
-el("btnAttach").onclick = addCV;
-el("btnBulk").onclick = bulkAdd;
-el("btnRun").onclick = runMatch;
-el("btnRefresh").onclick = getResults;
-el("btnCopyJson").onclick = () => { navigator.clipboard.writeText(JSON.stringify(lastResults,null,2)); toast("Copied Top-5 JSON"); };
-el("btnCsv").onclick = () => { if(!lastResults.length){ toast("No results yet"); return; } download("cv-score-top5.csv", toCSV(lastResults)); };
-el("minScore").addEventListener("input", renderResults);
-
-/* initialize */
 dbg();
-if(jobId){
-  // Try to show last used job summary from fields (best-effort)
-  const req = arrFromComma(localStorage.getItem("last_req")||"");
-  const pref = arrFromComma(localStorage.getItem("last_pref")||"");
-  renderJobSummary(localStorage.getItem("last_title")||"", req, pref);
-}
-
-/* persist some inputs for convenience */
-["job_title","job_req","job_pref"].forEach(id=>{
-  const n=el(id); n.addEventListener("input", ()=>localStorage.setItem("last_"+id.split("_")[1], n.value));
-});
 </script>
 </body>
 </html>

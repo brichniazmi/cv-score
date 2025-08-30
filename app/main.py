@@ -6,7 +6,7 @@ from .routers import jobs, candidates, match
 # Create tables at startup (simple demo behavior)
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="CV Score API", version="0.4.0")
+app = FastAPI(title="CV Score API", version="0.5.0")
 
 # API routers
 app.include_router(jobs.router)
@@ -33,11 +33,11 @@ UI_HTML = """
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    body { max-width: 1000px; margin: 24px auto; padding: 0 12px; }
+    body { max-width: 1000px; margin: 24px auto; padding: 0 12px; background:#fafafa; }
     h1 { margin: 0 0 8px; }
     .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin: 12px 0; background:#fff; }
     label { display:block; font-weight:600; margin: 10px 0 6px; }
-    textarea, input[type=text] { width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; }
+    textarea, input[type=text] { width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; background:#fff; }
     textarea { min-height: 140px; }
     button { padding: 10px 14px; border: 0; border-radius: 10px; background: #111827; color: #fff; cursor: pointer; }
     button.secondary { background:#4b5563; }
@@ -226,15 +226,41 @@ async function uploadTextCV() {
   }
 }
 
+/* Improved: show exact backend error (status + message) if match fails */
 async function runMatch() {
   const ok = await ensureJobSaved();
   if (!ok) return;
-  if (uploadedCount === 0) { setText("run_status", "Upload at least one CV", false, true); return; }
+
+  if (uploadedCount === 0) {
+    setText("run_status", "Upload at least one CV", false, true);
+    return;
+  }
+
   setText("run_status", "Running match…");
-  const r = await fetch(`/match/${jobId}/run`, { method:"POST" });
-  if (!r.ok) { setText("run_status", "Error running match", false, true); return; }
+  let r;
+  try {
+    r = await fetch(`/match/${jobId}/run`, { method:"POST" });
+  } catch (e) {
+    setText("run_status", "Network error: " + (e.message || e), false, true);
+    return;
+  }
+
+  if (!r.ok) {
+    let msg = "";
+    try {
+      const j = await r.json();
+      msg = j.detail || JSON.stringify(j);
+    } catch (_) {
+      msg = await r.text();
+    }
+    setText("run_status", `Error running match (HTTP ${r.status}): ${msg}`, false, true);
+    return;
+  }
+
   const j = await r.json();
-  runId = j.id; setText("run_status", "Run created ✓", true, false); setDbg();
+  runId = j.id;
+  setText("run_status", "Run created ✓", true, false);
+  setDbg();
 }
 
 function esc(s){ return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }

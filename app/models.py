@@ -59,6 +59,9 @@ class MatchRun(Base):
     job_id = Column(UUID(as_uuid=True), ForeignKey("job.id"))
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # NEW: JSON storage for results used by the /match router
+    results_json = Column(JSON, nullable=False, default=list)
+
     job = relationship("Job", back_populates="runs")
     scores = relationship("MatchScore", back_populates="run")
 

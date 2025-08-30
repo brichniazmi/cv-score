@@ -30,7 +30,7 @@ def ensure_results_column() -> None:
 Base.metadata.create_all(bind=engine)
 ensure_results_column()
 
-app = FastAPI(title="CV Score API", version="0.5.2")
+app = FastAPI(title="CV Score API", version="0.6.0")
 
 # API routers
 app.include_router(jobs.router)
@@ -47,7 +47,7 @@ def root_head():
     # Render and other load balancers sometimes send HEAD; reply 200 instead of 405
     return Response(status_code=200)
 
-# ---- Minimal web UI at /ui: JD only + upload many CVs, show best match + missing skills ----
+# ---- Web UI at /ui: JD + multi-CV upload + AI-style narrative report ----
 UI_HTML = """
 <!doctype html>
 <html>
@@ -57,8 +57,9 @@ UI_HTML = """
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-    body { max-width: 1000px; margin: 24px auto; padding: 0 12px; background:#fafafa; }
+    body { max-width: 1024px; margin: 24px auto; padding: 0 12px; background:#fafafa; color:#0f172a; }
     h1 { margin: 0 0 8px; }
+    h2 { margin: 0 0 6px; }
     .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; margin: 12px 0; background:#fff; }
     label { display:block; font-weight:600; margin: 10px 0 6px; }
     textarea, input[type=text] { width: 100%; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; background:#fff; }
@@ -78,11 +79,18 @@ UI_HTML = """
     input[type=file]{margin-top:6px}
     .best { border:2px solid #60a5fa; }
     .badge { display:inline-block; background:#dcfce7; color:#166534; padding:2px 8px; border-radius:999px; font-size:12px; margin-left:6px; }
+    .sect { margin-top:10px; }
+    .sect h4 { margin: 0 0 6px; font-size: 14px; color:#111827; }
+    .list { margin: 0; padding-left: 18px; }
+    .list li { margin: 4px 0; }
+    .kline { display:flex; flex-wrap:wrap; gap:6px; }
+    .kline .chip { background:#eef2ff; color:#1e293b; }
+    .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; color:#334155; }
   </style>
 </head>
 <body>
   <h1>CV Score <span class="pill">upload CVs → get the best match</span></h1>
-  <p class="muted">1) Paste the Job Description. 2) Upload CVs (PDF/DOCX or paste text). 3) Run the match. We'll show the best CV and the missing requirements to improve it.</p>
+  <p class="muted">1) Paste the Job Description. 2) Upload CVs (PDF/DOCX or paste text). 3) Run the match. You'll get an AI-style report for the best CV: quick read, missing requirements & how to tailor.</p>
 
   <div class="card">
     <h2>1) Job Description</h2>
@@ -133,10 +141,31 @@ UI_HTML = """
 
     <div id="best" class="card best" style="display:none; margin-top:12px;">
       <h3 style="margin:0 0 8px;">Best match <span id="best_name"></span><span id="best_score" class="badge"></span></h3>
-      <div><span class="muted">Missing requirements detected in this CV:</span></div>
-      <div id="best_missing" style="margin-top:6px;"></div>
-      <div style="margin-top:8px;"><span class="muted">Suggested improvements:</span></div>
-      <div id="best_rewrites" style="margin-top:6px;"></div>
+
+      <div class="sect" id="quick_read">
+        <h4>Quick read</h4>
+        <ul class="list" id="quick_points"></ul>
+      </div>
+
+      <div class="sect">
+        <h4>What’s missing (add if true)</h4>
+        <div id="best_missing" class="kline"></div>
+      </div>
+
+      <div class="sect">
+        <h4>How to tailor the CV</h4>
+        <div id="best_rewrites"></div>
+      </div>
+
+      <div class="sect">
+        <h4>Keyword checklist (ATS friendly)</h4>
+        <div id="best_keywords" class="kline"></div>
+      </div>
+
+      <div class="sect">
+        <h4>Summary of gaps</h4>
+        <div id="best_summary" class="muted"></div>
+      </div>
     </div>
 
     <div id="results" style="margin-top:12px;"></div>
@@ -164,6 +193,7 @@ function setDbg() {
   document.getElementById("dbg_run").textContent = runId || "—";
   document.getElementById("dbg_cvcount").textContent = uploadedCount;
 }
+function esc(s){ return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 
 function titleFromJD(jdText) {
   const first = (jdText || "").split("\\n").map(x => x.trim()).filter(Boolean)[0] || "";
@@ -287,30 +317,108 @@ async function runMatch() {
   setDbg();
 }
 
-function esc(s){ return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function extractJDBullets(text) {
+  const lines = (text || "").split("\\n").map(s => s.trim()).filter(Boolean);
+  const bullets = [];
+  for (const ln of lines) {
+    if (/^(\\-|\\*|•|\\d+\\.)\\s+/u.test(ln)) bullets.push(ln.replace(/^(\\-|\\*|•|\\d+\\.)\\s+/u, ''));
+  }
+  // If no formatted bullets, try to take meaningful lines
+  if (!bullets.length) {
+    bullets.push(...lines.slice(0, 5));
+  }
+  // Keep it short
+  return bullets.slice(0, 6);
+}
 
-function renderBestRow(row){
+function buildKeywordChecklist(sugg) {
+  const chips = [];
+  const missing = (sugg.missing_skills || []).slice(0, 8);
+  const surface = (sugg.skills_to_surface || []).slice(0, 6);
+  for (const m of missing) chips.push(`<span class="chip">${esc(m)}</span>`);
+  for (const s of surface) chips.push(`<span class="chip">${esc(s)}</span>`);
+  // generic-but-helpful clusters (only show if not already present)
+  const extra = ["appel d'offres","RFP","SLA","fournisseurs","sous-traitants","TCO","maintenance préventive","disponibilité"];
+  for (const e of extra) {
+    if (![...missing, ...surface].includes(e)) chips.push(`<span class="chip">${esc(e)}</span>`);
+  }
+  return chips.join(" ");
+}
+
+function renderBestNarrative(row){
   const best = document.getElementById("best");
   const nameEl = document.getElementById("best_name");
   const scoreEl = document.getElementById("best_score");
-  const missEl = document.getElementById("best_missing");
-  const rewEl  = document.getElementById("best_rewrites");
 
   const name = row.candidate_label || row.candidate_id;
   const scorePct = (row.total_score * 100).toFixed(1) + "%";
   nameEl.textContent = "— " + name;
   scoreEl.textContent = scorePct;
 
+  // QUICK READ
+  const jd_text = document.getElementById("job_text").value || "";
+  const quickList = document.getElementById("quick_points");
+  quickList.innerHTML = "";
+  const bullets = extractJDBullets(jd_text);
+  const reqPct = row.subscores && typeof row.subscores.req_skills === "number"
+    ? Math.round(row.subscores.req_skills * 100) : null;
+  const relPct = row.subscores && typeof row.subscores.role_relevance === "number"
+    ? Math.round(row.subscores.role_relevance * 100) : null;
+
+  const qitems = [];
+  qitems.push(`<li><strong>Role focus (JD):</strong> ${bullets.slice(0,3).map(esc).join("; ") || "—"}</li>`);
+  qitems.push(`<li><strong>Candidate:</strong> ${esc(name)} — score <strong>${scorePct}</strong>${reqPct!=null?`, req-skill coverage ~${reqPct}%`:''}${relPct!=null?`, semantic relevance ~${relPct}%`:''}</li>`);
+  quickList.innerHTML = qitems.join("");
+
+  // MISSING
+  const missEl = document.getElementById("best_missing");
   const sugg = row.suggestions || {};
   const missing = (sugg.missing_skills || []);
   missEl.innerHTML = (missing.length ? missing.map(s => `<span class="chip">${esc(s)}</span>`).join(" ") : "<span class='muted'>(none)</span>");
 
-  const rewrites = (sugg.bullets_to_rewrite || []).map(o => {
-    return `<div style="margin:.25rem 0"><div class="muted">• ${esc(o.original)}</div><div>↳ ${esc(o.rewrite)}</div></div>`;
-  }).join("");
-  rewEl.innerHTML = rewrites || "<span class='muted'>(none)</span>";
+  // REWRITES
+  const rewEl  = document.getElementById("best_rewrites");
+  const rewrites = (sugg.bullets_to_rewrite || []);
+  if (rewrites.length) {
+    rewEl.innerHTML = rewrites.map(o => {
+      return `<div style="margin:.4rem 0">
+        <div class="muted">• ${esc(o.original)}</div>
+        <div>↳ ${esc(o.rewrite)}</div>
+      </div>`;
+    }).join("");
+  } else {
+    rewEl.innerHTML = "<span class='muted'>(none)</span>";
+  }
+
+  // KEYWORDS
+  const kEl = document.getElementById("best_keywords");
+  kEl.innerHTML = buildKeywordChecklist(sugg);
+
+  // SUMMARY
+  const sumEl = document.getElementById("best_summary");
+  const gaps = missing.slice(0,3).join(", ") || "no critical gaps detected";
+  sumEl.innerHTML = `Main gaps: <span class="code">${esc(gaps)}</span>. Add the missing requirements (if true) and quantify 2–3 bullets to lift the score.`;
 
   best.style.display = "block";
+}
+
+function renderResultsTable(arr){
+  const rows = arr.map(row => {
+    const name = row.candidate_label || row.candidate_id;
+    const scorePct = (row.total_score * 100).toFixed(1) + "%";
+    const rank = (row.rank != null) ? row.rank : "-";
+    const sugg = row.suggestions || {};
+    const missing = (sugg.missing_skills || []).map(s => `<span class="chip">${esc(s)}</span>`).join(" ");
+    return `<tr>
+      <td>${esc(name)}<div class="muted"><code>${row.candidate_id}</code></div></td>
+      <td>${scorePct}</td>
+      <td>${rank}</td>
+      <td>${missing || "<span class='muted'>(none)</span>"}</td>
+    </tr>`;
+  }).join("");
+  document.getElementById("results").innerHTML =
+    `<table><thead><tr><th>Candidate</th><th>Score</th><th>Rank</th><th>Missing requirements</th></tr></thead><tbody>` +
+    (rows || "<tr><td colspan='4'>No results.</td></tr>") + "</tbody></table>";
 }
 
 async function getResults() {
@@ -322,27 +430,8 @@ async function getResults() {
   setText("run_status", "Top-5 loaded ✓", true, false);
 
   const arr = j.results || [];
-  if (arr.length) renderBestRow(arr[0]);
-
-  const rows = arr.map(row => {
-    const name = row.candidate_label || row.candidate_id;
-    const scorePct = (row.total_score * 100).toFixed(1) + "%";
-    const rank = (row.rank != null) ? row.rank : "-";
-
-    const sugg = row.suggestions || {};
-    const missing = (sugg.missing_skills || []).map(s => `<span class="chip">${esc(s)}</span>`).join(" ");
-
-    return `<tr>
-      <td>${esc(name)}<div class="muted"><code>${row.candidate_id}</code></div></td>
-      <td>${scorePct}</td>
-      <td>${rank}</td>
-      <td>${missing || "<span class='muted'>(none)</span>"}</td>
-    </tr>`;
-  }).join("");
-
-  document.getElementById("results").innerHTML =
-    `<table><thead><tr><th>Candidate</th><th>Score</th><th>Rank</th><th>Missing requirements</th></tr></thead><tbody>` +
-    (rows || "<tr><td colspan='4'>No results.</td></tr>") + "</tbody></table>";
+  if (arr.length) renderBestNarrative(arr[0]);
+  renderResultsTable(arr);
 }
 </script>
 </body>

@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 from .db import Base, engine
 from .routers import jobs, candidates, match
-
+ 
 # --- one-shot tiny migration to add results_json if missing on match_run ---
 def ensure_results_column() -> None:
     with engine.begin() as conn:

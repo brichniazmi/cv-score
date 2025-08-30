@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import text
 from .db import Base, engine
 from .routers import jobs, candidates, match
- 
+
 # --- one-shot tiny migration to add results_json if missing on match_run ---
 def ensure_results_column() -> None:
     with engine.begin() as conn:
@@ -26,26 +26,24 @@ def ensure_results_column() -> None:
 Base.metadata.create_all(bind=engine)
 ensure_results_column()
 
-app = FastAPI(title="CV Score API", version="0.6.1")
+app = FastAPI(title="CV Score API", version="0.6.2")
 
-# API routers
+# Routers
 app.include_router(jobs.router)
 app.include_router(candidates.router)
 app.include_router(match.router)
 
-# Health endpoints
+# Health
 @app.get("/")
 def root():
-    return {"service": "cv-score", "status": "ok", "version": "0.6.1"}
+    return {"service": "cv-score", "status": "ok", "version": "0.6.2"}
 
 @app.head("/")
 def root_head():
-    # Render and other load balancers sometimes send HEAD; reply 200 instead of 405
     return Response(status_code=200)
 
-# ---- Web UI at /ui: JD + multi-CV upload + AI-style narrative report ----
-UI_HTML = """
-<!doctype html>
+# ---------- UI (HTML) ----------
+UI_HTML = """<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -100,7 +98,6 @@ UI_HTML = """
 
   <div class="card">
     <h2>2) Upload CVs</h2>
-
     <div class="grid grid-2">
       <div>
         <label>Upload CV files (PDF or DOCX) – multiple allowed</label>
@@ -123,7 +120,6 @@ UI_HTML = """
         </div>
       </div>
     </div>
-
     <p class="muted" style="margin-top:8px;">We’ll automatically create candidates behind the scenes for each CV you upload.</p>
   </div>
 
@@ -175,49 +171,62 @@ UI_HTML = """
     </div>
   </div>
 
-<script>
+  <!-- Load JS from same-origin file (CSP-safe) -->
+  <script src="/ui.js?v=062" defer></script>
+</body>
+</html>
+"""
+
+# ---------- UI (JS) as separate file ----------
+UI_JS = r"""
+// ---- State ----
 let jobId = null;
 let runId = null;
 let uploadedCount = 0;
 
+// ---- Helpers ----
 function setText(id, txt, ok=false, err=false) {
   const el = document.getElementById(id);
+  if (!el) return;
   el.textContent = txt || "";
   el.className = ok ? "ok" : err ? "err" : "muted";
 }
 function setDbg() {
-  document.getElementById("dbg_job").textContent = jobId || "—";
-  document.getElementById("dbg_run").textContent = runId || "—";
-  document.getElementById("dbg_cvcount").textContent = uploadedCount;
+  const j = document.getElementById("dbg_job");
+  const r = document.getElementById("dbg_run");
+  const c = document.getElementById("dbg_cvcount");
+  if (j) j.textContent = jobId || "—";
+  if (r) r.textContent = runId || "—";
+  if (c) c.textContent = uploadedCount;
 }
 function esc(s){ return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-
 function titleFromJD(jdText) {
-  const first = (jdText || "").split("\\n").map(x => x.trim()).filter(Boolean)[0] || "";
+  const first = (jdText || "").split("\n").map(x => x.trim()).filter(Boolean)[0] || "";
   return first.slice(0, 80) || "Untitled Job";
 }
-
 async function pingApi(){
   try{
     const r = await fetch("/");
     const j = await r.json();
-    document.getElementById("dbg_api").textContent = (j.status || "ok") + " v" + (j.version || "");
+    const el = document.getElementById("dbg_api");
+    if (el) el.textContent = (j.status || "ok") + " v" + (j.version || "");
   }catch(e){
-    document.getElementById("dbg_api").textContent = "unreachable";
+    const el = document.getElementById("dbg_api");
+    if (el) el.textContent = "unreachable";
     console.error("API ping failed", e);
   }
 }
 
+// ---- Job ----
 async function ensureJobSaved() {
   if (jobId) return true;
-  const jd_text = document.getElementById("job_text").value || "";
+  const jd_text = document.getElementById("job_text")?.value || "";
   if (!jd_text.trim()) { setText("job_status", "Please paste the Job Description first.", false, true); return false; }
   return await saveJob();
 }
-
 async function saveJob() {
   try{
-    const jd_text = document.getElementById("job_text").value || "";
+    const jd_text = document.getElementById("job_text")?.value || "";
     if (!jd_text.trim()) { setText("job_status", "Please paste the Job Description", false, true); return false; }
     setText("job_status", "Saving job…");
     const payload = {
@@ -240,24 +249,24 @@ async function saveJob() {
   }
 }
 
+// ---- Candidates / Uploads ----
 async function createCandidate(name) {
   const payload = { external_ref: name || null, anonymized: false };
   const r = await fetch("/candidates/", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
   if (!r.ok) { console.error("createCandidate failed", r.status, await r.text()); throw new Error("Create candidate failed"); }
   return await r.json();
 }
-
 async function uploadFiles() {
   const ok = await ensureJobSaved();
   if (!ok) return;
   const input = document.getElementById("cv_files");
-  const files = Array.from(input.files || []);
+  const files = Array.from(input?.files || []);
   if (!files.length) { setText("files_status", "Choose one or more PDF/DOCX", false, true); return; }
   setText("files_status", "Uploading files…");
   const log = [];
   for (const file of files) {
     try {
-      const label = (file.name || "cv").replace(/\\.(pdf|docx)$/i,"");
+      const label = (file.name || "cv").replace(/\.(pdf|docx)$/i,"");
       const cand = await createCandidate(label);
       const form = new FormData();
       form.append("file", file);
@@ -274,14 +283,13 @@ async function uploadFiles() {
   setText("files_status", "Done", true, false);
   setDbg();
 }
-
 async function uploadTextCV() {
   const ok = await ensureJobSaved();
   if (!ok) return;
-  const text = document.getElementById("cv_text").value || "";
+  const text = document.getElementById("cv_text")?.value || "";
   if (!text.trim()) { setText("cv_text_status", "Paste some CV text first", false, true); return; }
   setText("cv_text_status", "Saving CV…");
-  const label = document.getElementById("cv_label").value || "Pasted CV";
+  const label = document.getElementById("cv_label")?.value || "Pasted CV";
   try {
     const cand = await createCandidate(label);
     const payload = { type: "cv", text_extracted: text, parsed_json: null };
@@ -296,54 +304,35 @@ async function uploadTextCV() {
   }
 }
 
+// ---- Match & Results ----
 async function runMatch() {
   const ok = await ensureJobSaved();
   if (!ok) return;
-
-  if (uploadedCount === 0) {
-    setText("run_status", "Upload at least one CV", false, true);
-    return;
-  }
-
+  if (uploadedCount === 0) { setText("run_status", "Upload at least one CV", false, true); return; }
   setText("run_status", "Running match…");
   let r;
-  try {
-    r = await fetch(`/match/${jobId}/run`, { method:"POST" });
-  } catch (e) {
-    setText("run_status", "Network error: " + (e.message || e), false, true);
-    console.error("runMatch network error", e);
-    return;
-  }
-
+  try { r = await fetch(`/match/${jobId}/run`, { method:"POST" }); }
+  catch (e) { setText("run_status", "Network error: " + (e.message || e), false, true); console.error("runMatch network error", e); return; }
   if (!r.ok) {
-    let msg = "";
-    try {
-      const j = await r.json();
-      msg = j.detail || JSON.stringify(j);
-    } catch (_) {
-      msg = await r.text();
-    }
+    let msg = ""; try { const j = await r.json(); msg = j.detail || JSON.stringify(j); } catch (_) { msg = await r.text(); }
     setText("run_status", `Error running match (HTTP ${r.status}): ${msg}`, false, true);
     console.error("runMatch failed", r.status, msg);
     return;
   }
-
   const j = await r.json();
   runId = j.id;
   setText("run_status", "Run created ✓", true, false);
   setDbg();
 }
-
 function extractJDBullets(text) {
-  const lines = (text || "").split("\\n").map(s => s.trim()).filter(Boolean);
+  const lines = (text || "").split("\n").map(s => s.trim()).filter(Boolean);
   const bullets = [];
   for (const ln of lines) {
-    if (/^(\\-|\\*|•|\\d+\\.)\\s+/u.test(ln)) bullets.push(ln.replace(/^(\\-|\\*|•|\\d+\\.)\\s+/u, ''));
+    if (/^(\-|\*|•|\d+\.)\s+/u.test(ln)) bullets.push(ln.replace(/^(\-|\*|•|\d+\.)\s+/u, ''));
   }
   if (!bullets.length) bullets.push(...lines.slice(0, 5));
   return bullets.slice(0, 6);
 }
-
 function buildKeywordChecklist(sugg) {
   const chips = [];
   const missing = (sugg.missing_skills || []).slice(0, 8);
@@ -351,12 +340,9 @@ function buildKeywordChecklist(sugg) {
   for (const m of missing) chips.push(`<span class="chip">${esc(m)}</span>`);
   for (const s of surface) chips.push(`<span class="chip">${esc(s)}</span>`);
   const extra = ["appel d'offres","RFP","SLA","fournisseurs","sous-traitants","TCO","maintenance préventive","disponibilité"];
-  for (const e of extra) {
-    if (![...missing, ...surface].includes(e)) chips.push(`<span class="chip">${esc(e)}</span>`);
-  }
+  for (const e of extra) if (![...missing, ...surface].includes(e)) chips.push(`<span class="chip">${esc(e)}</span>`);
   return chips.join(" ");
 }
-
 function renderBestNarrative(row){
   const best = document.getElementById("best");
   const nameEl = document.getElementById("best_name");
@@ -367,7 +353,7 @@ function renderBestNarrative(row){
   nameEl.textContent = "— " + name;
   scoreEl.textContent = scorePct;
 
-  const jd_text = document.getElementById("job_text").value || "";
+  const jd_text = document.getElementById("job_text")?.value || "";
   const quickList = document.getElementById("quick_points");
   quickList.innerHTML = "";
   const bullets = extractJDBullets(jd_text);
@@ -388,16 +374,9 @@ function renderBestNarrative(row){
 
   const rewEl  = document.getElementById("best_rewrites");
   const rewrites = (sugg.bullets_to_rewrite || []);
-  if (rewrites.length) {
-    rewEl.innerHTML = rewrites.map(o => {
-      return `<div style="margin:.4rem 0">
-        <div class="muted">• ${esc(o.original)}</div>
-        <div>↳ ${esc(o.rewrite)}</div>
-      </div>`;
-    }).join("");
-  } else {
-    rewEl.innerHTML = "<span class='muted'>(none)</span>";
-  }
+  rewEl.innerHTML = rewrites.length
+    ? rewrites.map(o => `<div style="margin:.4rem 0"><div class="muted">• ${esc(o.original)}</div><div>↳ ${esc(o.rewrite)}</div></div>`).join("")
+    : "<span class='muted'>(none)</span>";
 
   const kEl = document.getElementById("best_keywords");
   kEl.innerHTML = buildKeywordChecklist(sugg);
@@ -408,7 +387,6 @@ function renderBestNarrative(row){
 
   best.style.display = "block";
 }
-
 function renderResultsTable(arr){
   const rows = arr.map(row => {
     const name = row.candidate_label || row.candidate_id;
@@ -427,7 +405,6 @@ function renderResultsTable(arr){
     `<table><thead><tr><th>Candidate</th><th>Score</th><th>Rank</th><th>Missing requirements</th></tr></thead><tbody>` +
     (rows || "<tr><td colspan='4'>No results.</td></tr>") + "</tbody></table>";
 }
-
 async function getResults() {
   if (!runId) { setText("run_status", "Run the match first", false, true); return; }
   setText("run_status", "Fetching results…");
@@ -435,29 +412,35 @@ async function getResults() {
   if (!r.ok) { setText("run_status", "Error fetching results", false, true); console.error("getResults failed", r.status, await r.text()); return; }
   const j = await r.json();
   setText("run_status", "Top-5 loaded ✓", true, false);
-
   const arr = j.results || [];
   if (arr.length) renderBestNarrative(arr[0]);
   renderResultsTable(arr);
 }
 
-/* ---- Bind event listeners instead of inline onclick (CSP-safe) ---- */
-window.addEventListener("DOMContentLoaded", () => {
+// ---- Bind listeners (CSP-safe) ----
+function bindUI(){
   document.getElementById("btn_save_job")?.addEventListener("click", saveJob);
   document.getElementById("btn_upload_files")?.addEventListener("click", uploadFiles);
   document.getElementById("btn_upload_text_cv")?.addEventListener("click", uploadTextCV);
   document.getElementById("btn_run_match")?.addEventListener("click", runMatch);
   document.getElementById("btn_get_results")?.addEventListener("click", getResults);
-
-  // health ping for quick diagnosis
   pingApi();
   setDbg();
-});
-</script>
-</body>
-</html>
+  console.log("[cv-score] UI bound");
+}
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bindUI);
+} else {
+  bindUI();
+}
 """
 
 @app.get("/ui", response_class=HTMLResponse)
 def ui_page():
-    return UI_HTML
+    # If your host injects a CSP, keeping HTML inline-only avoids inline handlers; we use external /ui.js
+    return HTMLResponse(UI_HTML)
+
+@app.get("/ui.js")
+def ui_js():
+    # No-store avoids stale cached JS during rapid iterations
+    return Response(UI_JS, media_type="application/javascript", headers={"Cache-Control": "no-store"})

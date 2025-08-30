@@ -6,31 +6,27 @@ from .routers import jobs, candidates, match
 
 # --- one-shot tiny migration to add results_json if missing on match_run ---
 def ensure_results_column() -> None:
-    # Run after create_all so the table exists
     with engine.begin() as conn:
         try:
-            # PostgreSQL path (preferred)
             conn.execute(text(
                 "ALTER TABLE match_run "
                 "ADD COLUMN IF NOT EXISTS results_json JSONB "
                 "DEFAULT '[]'::jsonb NOT NULL;"
             ))
         except Exception:
-            # Fallback for non-PG engines (best-effort)
             try:
                 conn.execute(text(
                     "ALTER TABLE match_run "
                     "ADD COLUMN results_json JSON NOT NULL DEFAULT '[]';"
                 ))
             except Exception:
-                # If it still fails, continue; fresh DBs will get the column from metadata
                 pass
 
 # Create tables, then ensure the column exists (idempotent)
 Base.metadata.create_all(bind=engine)
 ensure_results_column()
 
-app = FastAPI(title="CV Score API", version="0.6.0")
+app = FastAPI(title="CV Score API", version="0.6.1")
 
 # API routers
 app.include_router(jobs.router)
@@ -40,7 +36,7 @@ app.include_router(match.router)
 # Health endpoints
 @app.get("/")
 def root():
-    return {"service": "cv-score", "status": "ok"}
+    return {"service": "cv-score", "status": "ok", "version": "0.6.1"}
 
 @app.head("/")
 def root_head():
@@ -90,14 +86,14 @@ UI_HTML = """
 </head>
 <body>
   <h1>CV Score <span class="pill">upload CVs → get the best match</span></h1>
-  <p class="muted">1) Paste the Job Description. 2) Upload CVs (PDF/DOCX or paste text). 3) Run the match. You'll get an AI-style report for the best CV: quick read, missing requirements & how to tailor.</p>
+  <p class="muted">1) Paste the Job Description. 2) Upload CVs (PDF/DOCX or paste text). 3) Run the match. You'll get an AI-style report for the best CV.</p>
 
   <div class="card">
     <h2>1) Job Description</h2>
     <label>Job Description (paste full text)</label>
     <textarea id="job_text" placeholder="Paste the full job description here..."></textarea>
     <div style="margin-top:12px; display:flex; gap:8px;">
-      <button onclick="saveJob()">Save Job</button>
+      <button id="btn_save_job" type="button">Save Job</button>
       <span id="job_status" class="muted"></span>
     </div>
   </div>
@@ -111,7 +107,7 @@ UI_HTML = """
         <input id="cv_files" type="file" multiple
           accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
         <div style="margin-top:8px;">
-          <button class="secondary" onclick="uploadFiles()">Upload selected files</button>
+          <button id="btn_upload_files" class="secondary" type="button">Upload selected files</button>
           <span id="files_status" class="muted"></span>
         </div>
         <div id="files_log" class="muted" style="margin-top:8px;"></div>
@@ -122,7 +118,7 @@ UI_HTML = """
         <input id="cv_label" type="text" placeholder="Name or label (optional, e.g., Jane Doe)" />
         <textarea id="cv_text" placeholder="Paste CV text here (optional alternative to files)..."></textarea>
         <div style="margin-top:8px;">
-          <button class="secondary" onclick="uploadTextCV()">Save pasted CV</button>
+          <button id="btn_upload_text_cv" class="secondary" type="button">Save pasted CV</button>
           <span id="cv_text_status" class="muted"></span>
         </div>
       </div>
@@ -134,8 +130,8 @@ UI_HTML = """
   <div class="card">
     <h2>3) Match</h2>
     <div style="display:flex; gap:8px; align-items:center;">
-      <button onclick="runMatch()">Run match for Job</button>
-      <button class="secondary" onclick="getResults()">Show Top-5</button>
+      <button id="btn_run_match" type="button">Run match for Job</button>
+      <button id="btn_get_results" class="secondary" type="button">Show Top-5</button>
       <span id="run_status" class="muted"></span>
     </div>
 
@@ -175,6 +171,7 @@ UI_HTML = """
     <h2>Debug</h2>
     <div class="muted">
       Job ID: <span id="dbg_job"></span> • Run ID: <span id="dbg_run"></span> • Uploaded CVs this session: <span id="dbg_cvcount">0</span>
+      • API: <span id="dbg_api"></span>
     </div>
   </div>
 
@@ -200,6 +197,17 @@ function titleFromJD(jdText) {
   return first.slice(0, 80) || "Untitled Job";
 }
 
+async function pingApi(){
+  try{
+    const r = await fetch("/");
+    const j = await r.json();
+    document.getElementById("dbg_api").textContent = (j.status || "ok") + " v" + (j.version || "");
+  }catch(e){
+    document.getElementById("dbg_api").textContent = "unreachable";
+    console.error("API ping failed", e);
+  }
+}
+
 async function ensureJobSaved() {
   if (jobId) return true;
   const jd_text = document.getElementById("job_text").value || "";
@@ -208,29 +216,35 @@ async function ensureJobSaved() {
 }
 
 async function saveJob() {
-  const jd_text = document.getElementById("job_text").value || "";
-  if (!jd_text.trim()) { setText("job_status", "Please paste the Job Description", false, true); return false; }
-  setText("job_status", "Saving job…");
-  const payload = {
-    title: titleFromJD(jd_text),
-    jd_text,
-    jd_required_skills: [],   // UI no longer captures these explicitly
-    jd_preferred_skills: []
-  };
-  const r = await fetch("/jobs/", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-  if (!r.ok) { setText("job_status", "Error saving job", false, true); return false; }
-  const j = await r.json();
-  jobId = j.id;
-  setText("job_status", "Job saved ✓", true, false);
-  setDbg();
-  return true;
+  try{
+    const jd_text = document.getElementById("job_text").value || "";
+    if (!jd_text.trim()) { setText("job_status", "Please paste the Job Description", false, true); return false; }
+    setText("job_status", "Saving job…");
+    const payload = {
+      title: titleFromJD(jd_text),
+      jd_text,
+      jd_required_skills: [],
+      jd_preferred_skills: []
+    };
+    const r = await fetch("/jobs/", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+    if (!r.ok) { setText("job_status", "Error saving job", false, true); console.error("saveJob failed", r.status, await r.text()); return false; }
+    const j = await r.json();
+    jobId = j.id;
+    setText("job_status", "Job saved ✓", true, false);
+    setDbg();
+    return true;
+  }catch(e){
+    setText("job_status", "Error: " + (e.message || "failed"), false, true);
+    console.error("saveJob error", e);
+    return false;
+  }
 }
 
 async function createCandidate(name) {
   const payload = { external_ref: name || null, anonymized: false };
   const r = await fetch("/candidates/", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
-  if (!r.ok) throw new Error("Create candidate failed");
-  return await r.json(); // {id, ...}
+  if (!r.ok) { console.error("createCandidate failed", r.status, await r.text()); throw new Error("Create candidate failed"); }
+  return await r.json();
 }
 
 async function uploadFiles() {
@@ -253,6 +267,7 @@ async function uploadFiles() {
       log.push("✓ " + label);
     } catch (e) {
       log.push("✗ " + (file.name || "cv") + " — " + (e.message || "upload failed"));
+      console.error("uploadFiles error", e);
     }
   }
   document.getElementById("files_log").innerHTML = log.map(x => "<div>"+x+"</div>").join("");
@@ -277,10 +292,10 @@ async function uploadTextCV() {
     setDbg();
   } catch (e) {
     setText("cv_text_status", "Error: " + (e.message || "failed"), false, true);
+    console.error("uploadTextCV error", e);
   }
 }
 
-/* Improved: show exact backend error (status + message) if match fails */
 async function runMatch() {
   const ok = await ensureJobSaved();
   if (!ok) return;
@@ -296,6 +311,7 @@ async function runMatch() {
     r = await fetch(`/match/${jobId}/run`, { method:"POST" });
   } catch (e) {
     setText("run_status", "Network error: " + (e.message || e), false, true);
+    console.error("runMatch network error", e);
     return;
   }
 
@@ -308,6 +324,7 @@ async function runMatch() {
       msg = await r.text();
     }
     setText("run_status", `Error running match (HTTP ${r.status}): ${msg}`, false, true);
+    console.error("runMatch failed", r.status, msg);
     return;
   }
 
@@ -323,11 +340,7 @@ function extractJDBullets(text) {
   for (const ln of lines) {
     if (/^(\\-|\\*|•|\\d+\\.)\\s+/u.test(ln)) bullets.push(ln.replace(/^(\\-|\\*|•|\\d+\\.)\\s+/u, ''));
   }
-  // If no formatted bullets, try to take meaningful lines
-  if (!bullets.length) {
-    bullets.push(...lines.slice(0, 5));
-  }
-  // Keep it short
+  if (!bullets.length) bullets.push(...lines.slice(0, 5));
   return bullets.slice(0, 6);
 }
 
@@ -337,7 +350,6 @@ function buildKeywordChecklist(sugg) {
   const surface = (sugg.skills_to_surface || []).slice(0, 6);
   for (const m of missing) chips.push(`<span class="chip">${esc(m)}</span>`);
   for (const s of surface) chips.push(`<span class="chip">${esc(s)}</span>`);
-  // generic-but-helpful clusters (only show if not already present)
   const extra = ["appel d'offres","RFP","SLA","fournisseurs","sous-traitants","TCO","maintenance préventive","disponibilité"];
   for (const e of extra) {
     if (![...missing, ...surface].includes(e)) chips.push(`<span class="chip">${esc(e)}</span>`);
@@ -355,7 +367,6 @@ function renderBestNarrative(row){
   nameEl.textContent = "— " + name;
   scoreEl.textContent = scorePct;
 
-  // QUICK READ
   const jd_text = document.getElementById("job_text").value || "";
   const quickList = document.getElementById("quick_points");
   quickList.innerHTML = "";
@@ -370,13 +381,11 @@ function renderBestNarrative(row){
   qitems.push(`<li><strong>Candidate:</strong> ${esc(name)} — score <strong>${scorePct}</strong>${reqPct!=null?`, req-skill coverage ~${reqPct}%`:''}${relPct!=null?`, semantic relevance ~${relPct}%`:''}</li>`);
   quickList.innerHTML = qitems.join("");
 
-  // MISSING
   const missEl = document.getElementById("best_missing");
   const sugg = row.suggestions || {};
   const missing = (sugg.missing_skills || []);
   missEl.innerHTML = (missing.length ? missing.map(s => `<span class="chip">${esc(s)}</span>`).join(" ") : "<span class='muted'>(none)</span>");
 
-  // REWRITES
   const rewEl  = document.getElementById("best_rewrites");
   const rewrites = (sugg.bullets_to_rewrite || []);
   if (rewrites.length) {
@@ -390,11 +399,9 @@ function renderBestNarrative(row){
     rewEl.innerHTML = "<span class='muted'>(none)</span>";
   }
 
-  // KEYWORDS
   const kEl = document.getElementById("best_keywords");
   kEl.innerHTML = buildKeywordChecklist(sugg);
 
-  // SUMMARY
   const sumEl = document.getElementById("best_summary");
   const gaps = missing.slice(0,3).join(", ") || "no critical gaps detected";
   sumEl.innerHTML = `Main gaps: <span class="code">${esc(gaps)}</span>. Add the missing requirements (if true) and quantify 2–3 bullets to lift the score.`;
@@ -425,7 +432,7 @@ async function getResults() {
   if (!runId) { setText("run_status", "Run the match first", false, true); return; }
   setText("run_status", "Fetching results…");
   const r = await fetch(`/match/${runId}/results?top_n=5`);
-  if (!r.ok) { setText("run_status", "Error fetching results", false, true); return; }
+  if (!r.ok) { setText("run_status", "Error fetching results", false, true); console.error("getResults failed", r.status, await r.text()); return; }
   const j = await r.json();
   setText("run_status", "Top-5 loaded ✓", true, false);
 
@@ -433,6 +440,19 @@ async function getResults() {
   if (arr.length) renderBestNarrative(arr[0]);
   renderResultsTable(arr);
 }
+
+/* ---- Bind event listeners instead of inline onclick (CSP-safe) ---- */
+window.addEventListener("DOMContentLoaded", () => {
+  document.getElementById("btn_save_job")?.addEventListener("click", saveJob);
+  document.getElementById("btn_upload_files")?.addEventListener("click", uploadFiles);
+  document.getElementById("btn_upload_text_cv")?.addEventListener("click", uploadTextCV);
+  document.getElementById("btn_run_match")?.addEventListener("click", runMatch);
+  document.getElementById("btn_get_results")?.addEventListener("click", getResults);
+
+  // health ping for quick diagnosis
+  pingApi();
+  setDbg();
+});
 </script>
 </body>
 </html>

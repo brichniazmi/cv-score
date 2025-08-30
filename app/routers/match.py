@@ -1,4 +1,3 @@
-# app/routers/match.py
 from __future__ import annotations
 from typing import List, Dict, Any
 from uuid import UUID
@@ -68,7 +67,7 @@ def create_run(job_id: UUID, db: Session = Depends(get_db)) -> Dict[str, str]:
         cv_text = _best_cv_text_for_candidate(db, cand.id)
         subs, hard_blockers = scoring.compute_subscores(jd, cv_text)
         total = scoring.total_score(subs, hard_blockers)
-        suggestions = scoring.make_suggestions(jd, cv_text)
+        suggestions = scoring.make_suggestions(jd, cv_text)  # includes missing_skills
 
         results.append({
             "candidate_id": str(cand.id),

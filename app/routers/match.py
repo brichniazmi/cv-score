@@ -1,124 +1,81 @@
 # app/routers/match.py
-from __future__ import annotations
-from typing import List, Dict, Any
-from uuid import UUID
-
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-
+from typing import List, Dict, Any
 from ..db import get_db
-from .. import models
-from .. import scoring
+from ..models import Job, Candidate, Document, MatchRun
+from ..scoring import compute_subscores, total_score, suggest_improvements
 
 router = APIRouter(prefix="/match", tags=["match"])
 
-def _best_cv_text_for_candidate(db: Session, candidate_id: UUID) -> str:
-    # 1) Prefer uploaded CVs
-    doc = (
-        db.query(models.Document)
-        .filter(
-            models.Document.candidate_id == candidate_id,
-            models.Document.type == "cv",
-            models.Document.storage_uri.like("upload:%"),
-        )
-        .order_by(models.Document.id.desc())
-        .first()
-    )
-    if doc and doc.text_extracted:
-        return doc.text_extracted
-
-    # 2) Fallback to any 'cv'
-    doc = (
-        db.query(models.Document)
-        .filter(models.Document.candidate_id == candidate_id, models.Document.type == "cv")
-        .order_by(models.Document.id.desc())
-        .first()
-    )
-    if doc and doc.text_extracted:
-        return doc.text_extracted
-
-    # 3) Fallback to any document
-    doc = (
-        db.query(models.Document)
-        .filter(models.Document.candidate_id == candidate_id)
-        .order_by(models.Document.id.desc())
-        .first()
-    )
-    return (doc.text_extracted or "") if doc else ""
-
-def _job_to_dict(job: models.Job) -> Dict[str, Any]:
+def _job_to_scoring_dict(job: Job) -> Dict[str, Any]:
     return {
-        "title": job.title,
-        "jd_text": job.jd_text,
-        "jd_required_skills": job.jd_required_skills or getattr(job, "jd_skills", []) or [],
+        "title": job.title or "",
+        "jd_text": job.jd_text or "",
+        "jd_required_skills": job.jd_required_skills or job.jd_skills or [],
         "jd_preferred_skills": job.jd_preferred_skills or [],
-        "mandatory_certs": getattr(job, "mandatory_certs", []) or [],
+        "mandatory_certs": [],  # optional field
     }
 
+def _candidate_cv_text(db: Session, cand_id) -> str:
+    docs = db.query(Document).filter(Document.candidate_id == cand_id).all()
+    parts = []
+    for d in docs:
+        if (d.type or "").lower() == "cv":
+            if d.text_extracted:
+                parts.append(d.text_extracted)
+    return "\n".join(parts).strip()
+
 @router.post("/{job_id}/run")
-def create_run(job_id: UUID, db: Session = Depends(get_db)) -> Dict[str, str]:
-    job = db.get(models.Job, job_id)
+def run_match(job_id: str, db: Session = Depends(get_db)):
+    job = db.get(Job, job_id)
     if not job:
-        raise HTTPException(404, detail="Job not found")
+        raise HTTPException(status_code=404, detail="Job not found")
 
-    jd = _job_to_dict(job)
+    jd = _job_to_scoring_dict(job)
 
-    candidates = db.query(models.Candidate).all()
-    if not candidates:
-        raise HTTPException(400, detail="No candidates exist. Upload at least one CV.")
+    # Collect candidates that at least have a CV document
+    cands = db.query(Candidate).all()
 
     results: List[Dict[str, Any]] = []
-    usable = 0
-
-    for cand in candidates:
-        cv_text = _best_cv_text_for_candidate(db, cand.id)
-        if not (cv_text or "").strip():
-            # Skip candidates with no usable text
+    for c in cands:
+        cv_text = _candidate_cv_text(db, c.id)
+        if not cv_text:
             continue
 
-        usable += 1
-        subs, hard_blockers = scoring.compute_subscores(jd, cv_text)
-        total = scoring.total_score(subs, hard_blockers)
-        suggestions = scoring.make_suggestions(jd, cv_text)  # includes missing_skills
+        subs, blockers = compute_subscores(jd, cv_text)
+        score = total_score(subs, blockers)
+        suggestions = suggest_improvements(jd, cv_text, subs, blockers)
 
         results.append({
-            "candidate_id": str(cand.id),
-            "candidate_label": cand.external_ref or f"Candidate {str(cand.id)[:8]}",
-            "total_score": round(total, 4),
-            "subscores": {k: round(v, 4) for k, v in subs.to_dict().items()},
-            "hard_blockers": hard_blockers,
+            "candidate_id": str(c.id),
+            "candidate_label": c.external_ref or None,
+            "total_score": round(score, 6),
+            "subscores": subs.to_dict(),
+            "hard_blockers": blockers,
             "suggestions": suggestions,
         })
 
-    if usable == 0:
-        raise HTTPException(400, detail="No usable CV text found. Make sure you uploaded a PDF/DOCX or pasted CV text.")
-
+    # sort + rank
     results.sort(key=lambda r: r["total_score"], reverse=True)
     for i, r in enumerate(results, start=1):
         r["rank"] = i
+        # optional delta to top-5
+        if i > 5 and results[4]["total_score"] > 0:
+            r["suggestions"]["delta_to_top5"] = max(0.0, results[4]["total_score"] - r["total_score"])
 
-    # Create run and store results on whichever column exists
-    run = models.MatchRun(job_id=job_id)
-    if hasattr(run, "results_json"):
-        run.results_json = results
-    elif hasattr(run, "results"):
-        run.results = results
-    else:
-        raise HTTPException(500, detail="MatchRun model must have a 'results_json' or 'results' column to store results.")
-
+    # persist to MatchRun.results_json
+    run = MatchRun(job_id=job.id, results_json=results)
     db.add(run)
     db.commit()
-    db.refresh(run)
     return {"id": str(run.id)}
 
 @router.get("/{run_id}/results")
-def get_results(
-    run_id: UUID,
-    top_n: int = Query(5, ge=1, le=50),
-    db: Session = Depends(get_db)
-) -> Dict[str, Any]:
-    run = db.get(models.MatchRun, run_id)
+def get_results(run_id: str, top_n: int = Query(0, ge=0), db: Session = Depends(get_db)):
+    run = db.get(MatchRun, run_id)
     if not run:
-        raise HTTPException(404, detail="Run not found")
-    data = getattr(run, "results_json", None) or getattr(run, "results", None) or []
-    return {"results": data[:top_n]}
+        raise HTTPException(status_code=404, detail="Run not found")
+    res = run.results_json or []
+    if top_n and top_n > 0:
+        res = res[:top_n]
+    return {"results": res}

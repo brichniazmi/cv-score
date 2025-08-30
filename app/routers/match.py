@@ -1,3 +1,4 @@
+# app/routers/match.py
 from __future__ import annotations
 from typing import List, Dict, Any
 from uuid import UUID
@@ -58,13 +59,24 @@ def _job_to_dict(job: models.Job) -> Dict[str, Any]:
 def create_run(job_id: UUID, db: Session = Depends(get_db)) -> Dict[str, str]:
     job = db.get(models.Job, job_id)
     if not job:
-        raise HTTPException(404, "Job not found")
+        raise HTTPException(404, detail="Job not found")
 
     jd = _job_to_dict(job)
 
+    candidates = db.query(models.Candidate).all()
+    if not candidates:
+        raise HTTPException(400, detail="No candidates exist. Upload at least one CV.")
+
     results: List[Dict[str, Any]] = []
-    for cand in db.query(models.Candidate).all():
+    usable = 0
+
+    for cand in candidates:
         cv_text = _best_cv_text_for_candidate(db, cand.id)
+        if not (cv_text or "").strip():
+            # Skip candidates with no usable text
+            continue
+
+        usable += 1
         subs, hard_blockers = scoring.compute_subscores(jd, cv_text)
         total = scoring.total_score(subs, hard_blockers)
         suggestions = scoring.make_suggestions(jd, cv_text)  # includes missing_skills
@@ -78,12 +90,22 @@ def create_run(job_id: UUID, db: Session = Depends(get_db)) -> Dict[str, str]:
             "suggestions": suggestions,
         })
 
+    if usable == 0:
+        raise HTTPException(400, detail="No usable CV text found. Make sure you uploaded a PDF/DOCX or pasted CV text.")
+
     results.sort(key=lambda r: r["total_score"], reverse=True)
     for i, r in enumerate(results, start=1):
         r["rank"] = i
 
-    # Store results on the run (adjust field name if your model differs)
-    run = models.MatchRun(job_id=job_id, results_json=results)
+    # Create run and store results on whichever column exists
+    run = models.MatchRun(job_id=job_id)
+    if hasattr(run, "results_json"):
+        run.results_json = results
+    elif hasattr(run, "results"):
+        run.results = results
+    else:
+        raise HTTPException(500, detail="MatchRun model must have a 'results_json' or 'results' column to store results.")
+
     db.add(run)
     db.commit()
     db.refresh(run)
@@ -97,6 +119,6 @@ def get_results(
 ) -> Dict[str, Any]:
     run = db.get(models.MatchRun, run_id)
     if not run:
-        raise HTTPException(404, "Run not found")
-    data = run.results_json or []
+        raise HTTPException(404, detail="Run not found")
+    data = getattr(run, "results_json", None) or getattr(run, "results", None) or []
     return {"results": data[:top_n]}

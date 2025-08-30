@@ -1,4 +1,3 @@
-# app/scoring.py
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Any, Set
 import re
@@ -35,6 +34,16 @@ ROLE_KEYWORDS = {
 
 SKILL_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9+.#-]{1,}\b")
 BULLET_CHARS = {"•", "◦", "-", "—", "–", "*"}
+
+# very small stopword list to filter JD tokens
+STOPWORDS = {
+    "the","and","with","for","to","of","in","on","as","a","an","is","are","will","be","by","or","you",
+    "we","our","your","role","job","team","work","working","experience","years","year","responsibilities",
+    "requirements","skills","preferred","required","plus","nice","have","ability","knowledge","strong","good",
+    "excellent","communication","problem","solving","etc","including","such","that","this","these","those",
+    "using","use","based","build","built","design","develop","developed","maintain","maintained","support",
+    "manage","managed","lead","led","senior","junior","engineer","developer","analyst","manager","degree",
+}
 
 def extract_keywords(text: str) -> List[str]:
     tokens = [t.lower() for t in SKILL_PATTERN.findall(text or "")]
@@ -76,8 +85,6 @@ def compute_subscores(jd: dict, cv_text: str) -> Tuple[Subscores, List[str]]:
     role_keys = ROLE_KEYWORDS.get(title, [])
     subs.role_relevance = jaccard(role_keys, cv_kw)
 
-    subs.experience_level = 0.7 if any(y in cv_kw for y in ["senior", "lead", "5+", "6+", "7+"]) else 0.5
-
     lines = [l.strip() for l in (cv_text or "").splitlines() if l.strip()]
     num_bullets = sum(1 for l in lines if l[:1] in BULLET_CHARS)
     num_quant = sum(1 for l in lines if re.search(r"(\d+%|\d+[kmb]?|\bpercent\b)", l, flags=re.I))
@@ -86,8 +93,8 @@ def compute_subscores(jd: dict, cv_text: str) -> Tuple[Subscores, List[str]]:
     subs.education = 0.5
     subs.languages = 0.5
 
-    for must in (jd.get("mandatory_certs") or []):
-        if (must or "").lower() not in cv_kw:
+    for must in jd.get("mandatory_certs", []) or []:
+        if must.lower() not in cv_kw:
             hard_blockers.append(f"Missing mandatory cert: {must}")
 
     return subs, hard_blockers
@@ -97,26 +104,49 @@ def total_score(subs: Subscores, hard_blockers: List[str]) -> float:
     cap = 0.60 if hard_blockers else 1.00
     return min(raw, cap)
 
-# -------- NEW: humanized suggestions based on the actual CV text --------
+# ---------- New: Missing skills + humanized suggestions ----------
 def _humanize_rewrite(line: str) -> str:
     return f"{line} — add a measurable outcome (e.g., “reduced cost by 30%”, “handled 200 tickets/month”)."
+
+def infer_missing_skills(jd_text: str, cv_text: str, limit: int = 20) -> List[str]:
+    jd_tokens = [t for t in extract_keywords(jd_text) if t not in STOPWORDS]
+    cv_tokens = set(extract_keywords(cv_text))
+    missing = [t for t in jd_tokens if (t not in cv_tokens)]
+    # keep order but unique
+    seen = set()
+    cleaned = []
+    for t in missing:
+        if len(t) <= 2 and t.isalpha():
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        cleaned.append(t)
+        if len(cleaned) >= limit:
+            break
+    return cleaned
 
 def make_suggestions(jd: dict, cv_text: str) -> Dict[str, Any]:
     tokens: Set[str] = set(extract_keywords(cv_text))
     req = [(s or "").lower().strip() for s in (jd.get("jd_required_skills") or jd.get("jd_skills") or [])]
     pref = [(s or "").lower().strip() for s in (jd.get("jd_preferred_skills") or [])]
 
-    # Surface preferred skills already present
+    jd_text = jd.get("jd_text") or ""
+
+    # 1) Missing skills (present in JD text, absent in CV)
+    missing_skills = infer_missing_skills(jd_text, cv_text, limit=20)
+
+    # 2) Preferred skills present in CV to surface
     skills_to_surface = [s for s in pref if s and s in tokens]
     skills_to_surface = list(dict.fromkeys(skills_to_surface))[:6]
 
-    # Pick up to 3 shortest non-trivial lines to rewrite
+    # 3) Pick up to 3 shortest non-trivial lines to rewrite
     lines = [_clean_line(l) for l in (cv_text or "").splitlines()]
     lines = [l for l in lines if len(l) > 12 and any(c.isalpha() for c in l)]
     weakest = sorted(lines, key=len)[:3]
     bullets_to_rewrite = [{"original": l, "rewrite": _humanize_rewrite(l)} for l in weakest]
 
-    # Estimate potential score gains
+    # 4) Estimate potential gains
     missing_req = [s for s in req if s and s not in tokens]
     changes = []
     if missing_req:
@@ -125,6 +155,7 @@ def make_suggestions(jd: dict, cv_text: str) -> Dict[str, Any]:
         changes.append({"label": "Quantify 3 key bullets", "delta": 0.05})
 
     return {
+        "missing_skills": missing_skills,          # <--- for the UI
         "skills_to_surface": skills_to_surface,
         "hard_blockers": [],
         "bullets_to_add": [],
